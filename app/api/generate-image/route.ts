@@ -1,6 +1,34 @@
-import { VertexAI } from '@google-cloud/vertexai';
+import {
+  VertexAI,
+  HarmCategory,
+  HarmBlockThreshold,
+  type Part,
+} from '@google-cloud/vertexai';
 import { NextRequest, NextResponse } from 'next/server';
 import path from 'path';
+
+type RecommendedProduct = {
+  image_url?: string | null;
+};
+
+type DownloadedImage = {
+  mimeType: string;
+  base64Data: string;
+};
+
+type InlineImage = {
+  mimeType: string;
+  data: string;
+};
+
+type Chunk =
+  | {
+      text: string;
+      fullTextSoFar: string;
+    }
+  | {
+      image: InlineImage;
+    };
 
 // 이미지 다운로드 함수
 async function downloadImage(url: string) {
@@ -15,7 +43,7 @@ async function downloadImage(url: string) {
     }
 
     const contentType = response.headers.get('content-type');
-    if (!contentType?.startsWith('image/')) {
+    if (!contentType || !contentType.startsWith('image/')) {
       throw new Error(`URL does not point to an image. Content-Type: ${contentType}`);
     }
 
@@ -62,9 +90,11 @@ export async function POST(request: NextRequest) {
       prompt = body.nanobanana_image_prompt;
 
       if (body.curation_result?.recommended_products) {
-        imageUrls = body.curation_result.recommended_products
-          .map((product: any) => product.image_url)
-          .filter((url: string) => url); // 빈 URL 제거
+        const recommendedProducts = body.curation_result
+          .recommended_products as RecommendedProduct[];
+        imageUrls = recommendedProducts
+          .map((product) => product.image_url ?? null)
+          .filter((url): url is string => typeof url === 'string' && url.length > 0); // 빈 URL 제거
       }
     } else {
       prompt = body.prompt || '';
@@ -78,7 +108,7 @@ export async function POST(request: NextRequest) {
     }
 
     // 이미지 다운로드
-    const downloadedImages = [];
+    const downloadedImages: DownloadedImage[] = [];
     if (imageUrls.length > 0) {
       console.log(`Downloading ${imageUrls.length} images...`);
 
@@ -121,30 +151,29 @@ export async function POST(request: NextRequest) {
         maxOutputTokens: 8192,
         temperature: 1,
         topP: 0.95,
-        responseModalities: 'image',
       },
       safetySettings: [
         {
-          category: 'HARM_CATEGORY_HATE_SPEECH',
-          threshold: 'BLOCK_NONE',
+          category: HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
         },
         {
-          category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-          threshold: 'BLOCK_NONE',
+          category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
         },
         {
-          category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
-          threshold: 'BLOCK_NONE',
+          category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
         },
         {
-          category: 'HARM_CATEGORY_HARASSMENT',
-          threshold: 'BLOCK_NONE',
+          category: HarmCategory.HARM_CATEGORY_HARASSMENT,
+          threshold: HarmBlockThreshold.BLOCK_NONE,
         }
       ],
     });
 
     // Multimodal input 구성: 텍스트 프롬프트 + 다운로드한 이미지들
-    const parts: any[] = [{ text: prompt }];
+    const parts: Part[] = [{ text: prompt }];
 
     for (const imageData of downloadedImages) {
       parts.push({
@@ -161,9 +190,9 @@ export async function POST(request: NextRequest) {
 
     const streamingResp = await generativeModel.generateContentStream(request_data);
 
-    const chunks: any[] = [];
+    const chunks: Chunk[] = [];
     let fullText = '';
-    const images: any[] = [];
+    const images: InlineImage[] = [];
 
     for await (const chunk of streamingResp.stream) {
       if (chunk.candidates && chunk.candidates[0]?.content?.parts) {
